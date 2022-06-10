@@ -25,6 +25,11 @@ extern "C" {
 #include "puff.h"
 #endif
 
+#ifdef HAVE_EMINFLATE
+#include "em_inflate.h"
+#endif
+
+
 // If you don't have stdint.h, the following two lines should work for most 32/64 bit systems
 // typedef unsigned int uint32_t;
 // typedef unsigned short uint16_t;
@@ -130,9 +135,19 @@ int jzReadLocalFileHeader(JZFile *zip, JZFileHeader *header,
 int jzReadLocalFileHeaderRaw(JZFile *zip, JZLocalFileHeader *header,
         char *filename, int len);
 
+// return header without reading filename (so it has a known read size)
+int jzReadLocalFileHeaderWithoutFilename(JZFile *zip, JZLocalFileHeader *header);
+// get the filename - returns the length of the filename (which should be in the header already)
+int jzReadLocalFileFilename(JZFile*zip, JZLocalFileHeader *header,char*name,int name_len);
+
 // Read data from file stream, described by header, to preallocated buffer
 // Return value is zlib coded, e.g. Z_OK, or error code
 int jzReadData(JZFile *zip, JZFileHeader *header, void *buffer);
+
+// read file data from buffer to buffer
+int jzReadDataBuffer(char*bufferIn, JZLocalFileHeader *header, void *bufferOut);
+// check file header
+int jzCheckFileHeader(JZLocalFileHeader*header);
 
 #ifdef __cplusplus
 };

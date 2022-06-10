@@ -66,6 +66,7 @@ int jzReadCentralDirectory(JZFile *zip, JZEndRecord *endRecord,
     int i;
 
     if(zip->seek(zip, endRecord->centralDirectoryOffset, SEEK_SET)) {
+        printf("centralDirOffset %d\n",endRecord->centralDirectoryOffset);
         fprintf(stderr, "Cannot seek in zip file!");
         return Z_ERRNO;
     }
@@ -152,6 +153,70 @@ int jzReadLocalFileHeaderRaw(JZFile *zip, JZLocalFileHeader *header,
 
     return Z_OK;
 }
+
+// Read local ZIP file header. Silent on errors so optimistic reading possible.
+int jzReadLocalFileHeaderWithoutFilename(JZFile *zip, JZLocalFileHeader *header)
+{
+    if(zip->read(zip, header, sizeof(JZLocalFileHeader)) <
+            sizeof(JZLocalFileHeader))
+        return Z_ERRNO;
+
+    if(header->signature != 0x04034B50)
+        return Z_ERRNO;
+
+/*    if(len) { // read filename
+        if(header->fileNameLength >= len)
+            return Z_ERRNO; // filename cannot fit
+
+        if(zip->read(zip, filename, header->fileNameLength) <
+                header->fileNameLength)
+            return Z_ERRNO; // read fail
+
+        filename[header->fileNameLength] = '\0'; // NULL terminate
+    } else { // skip filename
+        if(zip->seek(zip, header->fileNameLength, SEEK_CUR))
+            return Z_ERRNO;
+    }*/
+
+/*    if(header->extraFieldLength) {
+        if(zip->seek(zip, header->extraFieldLength, SEEK_CUR))
+            return Z_ERRNO;
+    }*/
+
+    if(header->compressionMethod == 0 &&
+            (header->compressedSize != header->uncompressedSize))
+        return Z_ERRNO; // Method is "store" but sizes indicate otherwise, abort
+    return Z_OK;
+}
+
+int jzCheckFileHeader(JZLocalFileHeader*header)
+{
+    if(header->signature != 0x04034B50)
+        return Z_ERRNO;
+
+    if(header->compressionMethod == 0 &&
+            (header->compressedSize != header->uncompressedSize))
+        return Z_ERRNO; // Method is "store" but sizes indicate otherwise, abort
+    // we can only deflate
+    if(header->compressionMethod != 8)
+    {
+        return Z_ERRNO;
+    }
+    return Z_OK;
+}
+
+// returns the length of the filename
+int jzReadLocalFileFilename(JZFile*zip, JZLocalFileHeader *header,char*name,int name_len)
+{
+    // jump over any extra bytes
+    char buf[128];
+    for(int c=0;c<header->extraFieldLength;c+=sizeof(buf))
+    {
+        zip->read(zip,buf,header->extraFieldLength-c);
+    }
+    return zip->read(zip,buf,header->fileNameLength);
+}
+
 
 int jzReadLocalFileHeader(JZFile *zip, JZFileHeader *header,
         char *filename, int len) {
@@ -250,6 +315,71 @@ int jzReadData(JZFile *zip, JZFileHeader *header, void *buffer) {
 
     return Z_OK;
 }
+
+// Read data from file stream, described by header, to preallocated buffer
+int jzReadDataBuffer(char*bufferIn, JZLocalFileHeader *header, void *bufferOut) {
+#ifdef HAVE_ZLIB
+    unsigned char *bytes = (unsigned char *)bufferOut; // cast
+    long compressedLeft, uncompressedLeft;
+    int ret;
+    z_stream strm;
+#endif
+
+    if(header->compressionMethod == 0) { // Store - just read it
+        memcpy(bufferOut,bufferIn,header->uncompressedSize);
+#ifdef HAVE_ZLIB
+    } else if(header->compressionMethod == 8) { // Deflate - using zlib
+        strm.zalloc = Z_NULL;
+        strm.zfree = Z_NULL;
+        strm.opaque = Z_NULL;
+
+        strm.avail_in = 0;
+        strm.next_in = Z_NULL;
+
+        // Use inflateInit2 with negative window bits to indicate raw data
+        if((ret = inflateInit2(&strm, -MAX_WBITS)) != Z_OK)
+            return ret; // Zlib errors are negative
+
+        strm.avail_in = header->compressedSize;
+        strm.avail_out = header->uncompressedSize;
+        strm.next_out=bytes;
+
+        ret = inflate(&strm, Z_NO_FLUSH);
+
+        if(ret == Z_STREAM_ERROR) return ret; // shouldn't happen
+
+        switch (ret) {
+            case Z_NEED_DICT:
+                ret = Z_DATA_ERROR;     /* and fall through */
+            case Z_DATA_ERROR: case Z_MEM_ERROR:
+                (void)inflateEnd(&strm);
+                return ret;
+        }
+        inflateEnd(&strm);
+
+#else
+#ifdef HAVE_PUFF
+    } else if(header->compressionMethod == 8) { // Deflate - using puff()
+        unsigned long destlen = header->uncompressedSize,
+                      sourcelen = header->compressedSize;
+        int ret = puff((unsigned char *)bufferOut, &destlen, (unsigned char*)bufferIn, &sourcelen);
+        if(ret) return -ret; // something went wrong
+#endif // HAVE_PUFF
+#ifdef HAVE_EMINFLATE
+    } else if(header->compressionMethod == 8) { // Deflate - using puff()
+        unsigned long destlen = header->uncompressedSize,
+                      sourcelen = header->compressedSize;
+        int ret = em_inflate(bufferIn, sourcelen, bufferOut,destlen,1);
+        if(ret<0) return -99; // something went wrong
+
+#endif
+#endif
+    } else {
+        return -95;
+    }
+    return Z_OK;
+}
+
 
 
 typedef struct {
